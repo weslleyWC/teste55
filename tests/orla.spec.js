@@ -55,6 +55,12 @@ test('mobile viewport exposes touch movement after entering', async ({ page }) =
   const after = await page.evaluate(() => window.orlaState().position);
   expect(Math.hypot(after[0] - before[0], after[2] - before[2])).toBeGreaterThan(.2);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  await page.getByRole('button', { name: 'Ver rolês', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Rolês na orla' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Ligar música', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Participar da corrida', exact: true })).toBeVisible();
+  await page.screenshot({ path: '/tmp/orla-mobile-activities.png' });
+  await page.getByRole('button', { name: 'Fechar rolês', exact: true }).click();
 });
 
 });

@@ -71,3 +71,39 @@ test('production server serves compiled application and its JavaScript', async t
   const script = html.match(/src="(\/assets\/[^\"]+\.js)"/); assert.ok(script, 'build must reference a bundled JavaScript asset');
   const asset = await fetch(root + script[1]); assert.equal(asset.status, 200); assert.match(asset.headers.get('content-type'), /javascript/);
 });
+
+test('race lobby and start are shared by two clients, and party dance requires proximity', async t => {
+  const { connect } = await fixture(t);
+  const a = await connect('Ana'), joined = await a.next(m => m.type === 'joined');
+  assert.equal(joined.activities.race.phase, 'idle'); assert.equal(joined.activities.party.attendees, 0);
+  const b = await connect('Beto'); await b.next(m => m.type === 'joined');
+  a.send({ type: 'race-join' });
+  await b.next(m => m.type === 'snapshot' && m.activities.race.phase === 'countdown');
+  b.send({ type: 'race-join' });
+  const lobby = await a.next(m => m.type === 'snapshot' && m.activities.race.racers.length === 2);
+  assert.equal(lobby.activities.race.racers[0].name, 'Ana');
+  a.send({ type: 'party-dance' });
+  const error = await a.next(m => m.type === 'activity-error'); assert.match(error.text, /pista/);
+});
+
+test('walking to the kiosk enables a longer shared party dance', async t => {
+  const { connect } = await fixture(t);
+  const a = await connect('Ana'), joined = await a.next(m => m.type === 'joined');
+  let { x, z } = joined.players[0];
+  async function moveTo(targetX, targetZ) {
+    while (Math.hypot(targetX - x, targetZ - z) > .01) {
+      const distance = Math.hypot(targetX - x, targetZ - z), step = Math.min(1, distance);
+      x += (targetX - x) / distance * step; z += (targetZ - z) / distance * step;
+      await new Promise(resolve => setTimeout(resolve, 200));
+      a.send({ type: 'move', x, z, rotation: 0, moving: true });
+      await a.next(m => m.type === 'snapshot' && m.players.some(p => p.id === joined.id && Math.abs(p.x - x) < .01 && Math.abs(p.z - z) < .01));
+    }
+  }
+  await moveTo(7, 2); await moveTo(7, -17);
+  a.send({ type: 'party-dance' });
+  const dancing = await a.next(m => m.type === 'snapshot' && m.players.some(p => p.id === joined.id && p.gesture === 'dance'));
+  assert.equal(dancing.activities.party.attendees, 1);
+  assert.ok(dancing.players[0].gestureUntil - Date.now() > 10000);
+  const b = await connect('Beto'), shared = await b.next(m => m.type === 'joined');
+  assert.equal(shared.activities.party.attendees, 1); assert.equal(shared.players.find(p => p.id === joined.id).gesture, 'dance');
+});

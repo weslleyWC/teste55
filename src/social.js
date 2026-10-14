@@ -1,4 +1,4 @@
-export function createSocial({ onJoined, onPlayers, onDisconnected, onCorrection }) {
+export function createSocial({ onJoined, onPlayers, onDisconnected, onCorrection, onActivities, onActivityError }) {
   let socket = null, id = null, nickname = '', joined = false;
   const log = document.querySelector('#chat-log');
   const input = document.querySelector('#chat-input');
@@ -35,11 +35,14 @@ export function createSocial({ onJoined, onPlayers, onDisconnected, onCorrection
       if (message.type === 'joined') {
         clearTimeout(timeout); id = message.id; setConnected(true); note.textContent = ''; status.textContent = 'AO VIVO NA ORLA';
         for (const chat of message.history) chatLine(chat);
+        onActivities(message.activities, id);
         onJoined(message.players.find(player => player.id === id)); onPlayers(message.players, id);
         count.textContent = `${message.players.length}/24 na orla`;
       } else if (message.type === 'snapshot') {
+        onActivities(message.activities, id);
         onPlayers(message.players, id); count.textContent = `${message.players.length}/24 na orla`;
       } else if (message.type === 'chat' || message.type === 'notice') chatLine(message);
+      else if (message.type === 'activity-error') onActivityError(message.text);
       else if (message.type === 'correct') onCorrection(message);
       else if (message.type === 'error') { note.textContent = message.text; retry.classList.remove('hidden'); }
     });
@@ -69,5 +72,6 @@ export function createSocial({ onJoined, onPlayers, onDisconnected, onCorrection
     move: state => { if (joined) send({ type: 'move', ...state }); },
     gesture: gesture => { if (joined) send({ type: 'gesture', gesture }); },
     connected: () => joined,
+    activity: type => { if (joined) send({ type }); },
   };
 }

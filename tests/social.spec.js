@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 test('two browsers meet, exchange safe chat, see movement and gestures, and remove departed players', async ({ browser }) => {
+  test.setTimeout(180000);
   const contexts = [await browser.newContext({ viewport: { width: 900, height: 700 } }), await browser.newContext({ viewport: { width: 900, height: 700 } })];
   const [a, b] = await Promise.all(contexts.map(context => context.newPage()));
   const errors = [];
@@ -32,6 +33,21 @@ test('two browsers meet, exchange safe chat, see movement and gestures, and remo
     const afterTyping = await a.evaluate(() => window.orlaState().position);
     expect(afterTyping[0]).toBeCloseTo(typingPosition[0], 3);
     expect(afterTyping[2]).toBeCloseTo(typingPosition[2], 3);
+    await b.getByRole('button', { name: 'Ligar música', exact: true }).click();
+    await expect(b.getByRole('button', { name: 'Silenciar música', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect.poll(() => b.evaluate(() => window.orlaState().activities.music.scheduled), { timeout: 10000 }).toBeGreaterThan(0);
+    expect(await b.evaluate(() => window.orlaState().activities.music.context)).toBe('running');
+    await b.getByRole('button', { name: 'Silenciar música', exact: true }).click();
+    await expect(b.getByRole('button', { name: 'Ligar música', exact: true })).toHaveAttribute('aria-pressed', 'false');
+    await b.getByRole('button', { name: 'Como chegar', exact: true }).click();
+    await expect(b.locator('#navigation-text')).toContainText('Pista do quiosque');
+    await Promise.all([a, b].map(page => page.getByRole('button', { name: 'Participar da corrida', exact: true }).click()));
+    await expect.poll(() => b.evaluate(() => window.orlaState().activities.world.race.racers.length), { timeout: 10000 }).toBe(2);
+    const startA = await a.evaluate(() => window.orlaState().activities.world.race.startsAt);
+    expect(await b.evaluate(() => window.orlaState().activities.world.race.startsAt)).toBe(startA);
+    await expect.poll(() => b.evaluate(() => window.orlaState().activities.world.race.phase), { timeout: 15000 }).toBe('running');
+    await expect(b.locator('#navigation-text')).toContainText('Arco 1/4');
+    await b.screenshot({ path: '/tmp/orla-phase3.png' });
     await b.screenshot({ path: '/tmp/orla-social.png' });
     await contexts[0].close();
     await expect(b.locator('#player-count')).toHaveText('1/24 na orla');

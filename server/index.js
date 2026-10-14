@@ -4,14 +4,18 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { bounds, blocked, gestures } from '../shared/world.js';
+import { createActivities } from './activities.js';
+import { party, near } from '../shared/activities.js';
 
-export function createOrlaServer({ port = 3001, host = '0.0.0.0' } = {}) {
+export function createOrlaServer({ port = 3001, host = '0.0.0.0', activityOptions = {} } = {}) {
   const app = express();
   const server = createServer(app);
   const wss = new WebSocketServer({ server, path: '/social', maxPayload: 4096 });
   const players = new Map(), history = [];
   const sockets = new Map();
   const MAX_PLAYERS = 24;
+  const activities = createActivities(activityOptions);
+  const activityState = () => activities.snapshot(players.values());
   const state = () => [...players.values()].map(({ lastMove, lastChat, lastGesture, ...player }) => player);
   const send = (ws, message) => { if (ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 65536) ws.send(JSON.stringify(message)); };
   const broadcast = message => { for (const ws of sockets.values()) send(ws, message); };
@@ -39,9 +43,9 @@ export function createOrlaServer({ port = 3001, host = '0.0.0.0' } = {}) {
         id = randomUUID(); clearTimeout(joinDeadline);
         const player = { id, name, slot, x: -3.5 + (slot % 3) * 1.4, z: 2 + Math.floor(slot / 3) * 1.5, rotation: 0, moving: false, running: false, gesture: null, gestureUntil: 0, lastMove: now, lastChat: 0, lastGesture: 0 };
         players.set(id, player); sockets.set(id, ws);
-        send(ws, { type: 'joined', id, players: state(), history });
+        send(ws, { type: 'joined', id, players: state(), history, activities: activityState() });
         broadcast({ type: 'notice', text: `${name} chegou na orla.` });
-        broadcast({ type: 'snapshot', players: state() });
+        broadcast({ type: 'snapshot', players: state(), activities: activityState() });
         return;
       }
       const player = players.get(id);
@@ -53,6 +57,15 @@ export function createOrlaServer({ port = 3001, host = '0.0.0.0' } = {}) {
           send(ws, { type: 'correct', x: player.x, z: player.z }); return;
         }
         Object.assign(player, { x: message.x, z: message.z, rotation: Math.atan2(Math.sin(message.rotation), Math.cos(message.rotation)), moving: message.moving === true, running: message.running === true, lastMove: now });
+        activities.move(player);
+      } else if (message.type === 'race-join') {
+        const error = activities.join(player);
+        if (error) send(ws, { type: 'activity-error', text: error });
+        else broadcast({ type: 'snapshot', players: state(), activities: activityState() });
+      } else if (message.type === 'party-dance') {
+        if (!near(player, party)) { send(ws, { type: 'activity-error', text: 'Chegue perto da pista do quiosque para dançar na festa.' }); return; }
+        player.gesture = 'dance'; player.gestureUntil = now + 15000; player.lastGesture = now;
+        broadcast({ type: 'snapshot', players: state(), activities: activityState() });
       } else if (message.type === 'chat') {
         if (typeof message.text !== 'string' || now - player.lastChat < 800) return;
         const text = message.text.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 200);
@@ -62,14 +75,14 @@ export function createOrlaServer({ port = 3001, host = '0.0.0.0' } = {}) {
         history.push(chat); if (history.length > 40) history.shift(); broadcast(chat);
       } else if (message.type === 'gesture' && gestures.includes(message.gesture) && now - player.lastGesture > 1000) {
         player.lastGesture = now; player.gesture = message.gesture; player.gestureUntil = now + 3500;
-        broadcast({ type: 'snapshot', players: state() });
+        broadcast({ type: 'snapshot', players: state(), activities: activityState() });
       }
     });
     const heartbeat = setInterval(() => { if (!alive) return ws.terminate(); alive = false; ws.ping(); }, 15000);
     ws.on('close', () => {
       clearTimeout(joinDeadline); clearInterval(heartbeat);
-      const player = players.get(id); players.delete(id); sockets.delete(id);
-      if (player) { broadcast({ type: 'notice', text: `${player.name} saiu da orla.` }); broadcast({ type: 'snapshot', players: state() }); }
+      const player = players.get(id); players.delete(id); sockets.delete(id); activities.leave(id);
+      if (player) { broadcast({ type: 'notice', text: `${player.name} saiu da orla.` }); broadcast({ type: 'snapshot', players: state(), activities: activityState() }); }
     });
   });
   const snapshots = setInterval(() => {
@@ -78,7 +91,7 @@ export function createOrlaServer({ port = 3001, host = '0.0.0.0' } = {}) {
       if (now > player.gestureUntil) player.gesture = null;
       if (now - player.lastMove > 500) player.moving = false;
     }
-    if (players.size) broadcast({ type: 'snapshot', players: state() });
+    if (players.size) broadcast({ type: 'snapshot', players: state(), activities: activityState() });
   }, 100);
   server.on('close', () => clearInterval(snapshots));
   return {

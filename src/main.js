@@ -8,6 +8,8 @@ import '@fontsource/manrope/800.css';
 import './style.css';
 import { createSocial } from './social.js';
 import { blocked, bounds } from '../shared/world.js';
+import { party, raceStart, checkpoints, near } from '../shared/activities.js';
+import { createActivityUI } from './activities.js';
 
 const host = document.querySelector('#world');
 const loading = document.querySelector('#loading');
@@ -148,7 +150,7 @@ function umbrella(x, z, color) {
   box(.65, .05, 1.8, '#f0e5cb', x + .5, .12, z + .7);
   box(.65, .05, 1.8, color, x - .55, .13, z + .7);
 }
-for (let i = 0; i < 24; i++) umbrella(4 + random() * 9, -105 + i * 8.5, ['#d98c67', '#e0c17f', '#739c94', '#ece2c7'][i % 4]);
+for (let i = 0; i < 24; i++) { const x = 4 + random() * 9, z = -105 + i * 8.5; if (!near({ x, z }, party, 6)) umbrella(x, z, ['#d98c67', '#e0c17f', '#739c94', '#ece2c7'][i % 4]); }
 
 const obstacles = [];
 function obstacle(x, z, w, d) { obstacles.push({ x, z, w: w / 2 + .4, d: d / 2 + .4 }); }
@@ -180,6 +182,19 @@ for (let z = -93; z < 80; z += 23) {
   box(.15, .9, 2, '#b4946b', -7, .95, z + 3);
   obstacle(-6.7, z + 3, .9, 2);
 }
+// A beach dance floor, speakers and festoon lamps at the first kiosk.
+for (let x = 0; x < 4; x++) for (let z = 0; z < 4; z++) box(1.35, .06, 1.35, (x + z) % 2 ? '#759a8c' : '#e8c59d', party.x - 2.1 + x * 1.4, .02, party.z - 2.1 + z * 1.4);
+for (const side of [-1, 1]) {
+  box(.75, 1.5, .6, '#344f4c', party.x + side * 2.7, .8, party.z - 2.8);
+  for (const y of [.55, 1.15]) { const speaker = cylinder(.22, .22, .08, '#213d3c', party.x + side * 2.7, y, party.z - 2.46); speaker.rotation.x = Math.PI / 2; }
+  cylinder(.055, .07, 3.5, '#907653', party.x + side * 3, 1.75, party.z - 3);
+}
+box(6, .035, .04, '#536957', party.x, 3.5, party.z - 3);
+for (let i = 0; i < 9; i++) sphere(.1, i % 2 ? '#ffca96' : '#e8e9bc', party.x - 2.8 + i * .7, 3.35 - Math.sin(i / 8 * Math.PI) * .35, party.z - 3);
+sign('PÔR DO SOL NA ORLA', party.x, 2.8, party.z - 3.03, 3.3);
+for (const side of [-1, 1]) cylinder(.045, .055, 3.2, '#7c8f79', raceStart.x + side * 1.3, 1.6, raceStart.z - 3.5);
+sign('CORRIDA DA ORLA', raceStart.x, 3.1, raceStart.z - 3.5, 2.6);
+
 // A simple stylized avatar, built from articulated meshes.
 const avatar = new THREE.Group(); avatar.position.set(-3.5, .08, 2); scene.add(avatar);
 const skin = '#b77952', shirt = '#f0eee2', shorts = '#467c79';
@@ -227,6 +242,22 @@ for (const objects of batches.values()) {
   geometries.forEach(g => g.dispose());
 }
 
+const raceRings = checkpoints.map((point, index) => {
+  const group = new THREE.Group(); group.position.set(point.x, 0, point.z);
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(1.25, .09, 6, 32), new THREE.MeshStandardMaterial({ color: '#f6bb82', emissive: '#a65f24', emissiveIntensity: .25, roughness: .65 }));
+  ring.position.y = 1.35; group.add(ring);
+  if (index % 2) group.rotation.y = Math.PI / 2;
+  group.visible = false; scene.add(group); return { group, ring };
+});
+const partyLight = new THREE.PointLight('#ffae79', 9, 13); partyLight.position.set(party.x, 4, party.z); scene.add(partyLight);
+let navigationTarget = null;
+const activityUI = createActivityUI({
+  getPosition: () => avatar.position,
+  send: type => social.activity(type),
+  onNavigate(point, title) { navigationTarget = { ...point, title }; keys.clear(); renderer.domElement.focus(); },
+});
+document.querySelector('#cancel-navigation').onclick = () => navigationTarget = null;
+
 let playing = false, yaw = .4, pitch = .28, distance = 7.8;
 const keys = new Set();
 const welcome = document.querySelector('#welcome'), session = document.querySelector('#session');
@@ -242,6 +273,7 @@ document.querySelector('#enter').onclick = () => {
   if (matchMedia('(pointer: coarse)').matches) document.querySelector('#touch-controls').classList.remove('hidden');
   document.querySelector('#social-panel').classList.remove('hidden');
   document.querySelector('#gestures').classList.remove('hidden');
+  activityUI.open();
   selfLabel.textContent = name; social.connect(name);
   renderer.domElement.focus();
 };
@@ -273,6 +305,8 @@ function label(name, self = false) {
 }
 const selfLabel = label('Você', true);
 const social = createSocial({
+  onActivities(state, id) { activityUI.receive(state, id); },
+  onActivityError(text) { activityUI.error(text); },
   onJoined(player) { avatar.position.set(player.x, .08, player.z); keys.clear(); },
   onPlayers(players, id) {
     const present = new Set();
@@ -288,7 +322,7 @@ const social = createSocial({
     }
     for (const [id, peer] of peers) if (!present.has(id)) { scene.remove(peer.model); peer.label.remove(); peers.delete(id); }
   },
-  onDisconnected() { keys.clear(); localGesture = null; for (const peer of peers.values()) { scene.remove(peer.model); peer.label.remove(); } peers.clear(); },
+  onDisconnected() { activityUI.disconnect(); keys.clear(); localGesture = null; for (const peer of peers.values()) { scene.remove(peer.model); peer.label.remove(); } peers.clear(); },
   onCorrection(position) { avatar.position.x = position.x; avatar.position.z = position.z; },
 });
 for (const button of document.querySelectorAll('[data-gesture]')) button.onclick = () => {
@@ -362,15 +396,34 @@ function animate() {
     target.copy(avatar.position).add(new THREE.Vector3(0, 1.2, 0));
     desired.set(target.x + Math.sin(yaw) * distance * Math.cos(pitch), target.y + Math.sin(pitch) * distance, target.z + Math.cos(yaw) * distance * Math.cos(pitch));
     camera.position.lerp(desired, 1 - Math.exp(-dt * 6)); camera.lookAt(target);
-    document.querySelector('#zone').textContent = avatar.position.x > .2 ? 'Areia, brisa e pé descalço' : 'Calçadão de Copacabana';
+    document.querySelector('#zone').textContent = near(avatar.position, party) ? 'Pista do quiosque · bora dançar!' : avatar.position.x > .2 ? 'Areia, brisa e pé descalço' : 'Calçadão de Copacabana';
     document.querySelector('#map-dot').setAttribute('cy', String(THREE.MathUtils.clamp(65 + avatar.position.z * .32, 8, 111)));
   }
   foam.forEach((strip, i) => { strip.position.x = 18 + i * 2.4 + Math.sin(elapsed * .5 + i) * .5; strip.material.opacity = .22 + Math.sin(elapsed * .65 + i) * .1; });
   updatePeers(dt);
+  const activity = activityUI.state();
+  const racer = activity.world?.race.racers.find(p => p.id === activity.playerId);
+  raceRings.forEach(({ group, ring }, index) => {
+    group.visible = playing && ['countdown', 'running'].includes(activity.world?.race.phase);
+    const next = racer?.checkpoint === index;
+    ring.material.color.set(next ? '#ffe8a8' : '#749e93');
+    ring.material.emissiveIntensity = next ? .5 + Math.sin(elapsed * 4) * .2 : .05;
+  });
+  partyLight.intensity = 7 + Math.sin(elapsed * 5) * 2;
+  const raceTarget = activityUI.target();
+  const waypoint = raceTarget ? { ...raceTarget, title: `Arco ${(racer?.checkpoint ?? 0) + 1}/4 · ${raceTarget.label}` } : navigationTarget;
+  const navigation = document.querySelector('#navigation');
+  navigation.classList.toggle('hidden', !playing || !waypoint);
+  if (waypoint && playing) {
+    const dx = waypoint.x - avatar.position.x, dz = waypoint.z - avatar.position.z;
+    document.querySelector('#navigation-text').textContent = `${waypoint.title} · ${Math.round(Math.hypot(dx, dz))} m`;
+    document.querySelector('#navigation-arrow').style.transform = `rotate(${Math.atan2(dx, -dz) + yaw}rad)`;
+    document.querySelector('#cancel-navigation').classList.toggle('hidden', Boolean(raceTarget));
+  }
   renderer.render(scene, camera); frames++;
   if (frames === 2) { loading.classList.add('hidden'); host.dataset.ready = 'true'; }
 }
 renderer.setAnimationLoop(animate);
 window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 // Read-only state for a browser smoke test; no credentials or gameplay commands.
-window.orlaState = () => ({ playing, position: avatar.position.toArray(), camera: camera.position.toArray(), frames, connected: social.connected(), peers: [...peers.values()].map(p => ({ id: p.state.id, name: p.state.name, x: p.model.position.x, z: p.model.position.z, gesture: p.state.gesture })) });
+window.orlaState = () => ({ playing, position: avatar.position.toArray(), camera: camera.position.toArray(), frames, connected: social.connected(), activities: activityUI.state(), peers: [...peers.values()].map(p => ({ id: p.state.id, name: p.state.name, x: p.model.position.x, z: p.model.position.z, gesture: p.state.gesture })) });
