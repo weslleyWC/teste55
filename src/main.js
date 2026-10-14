@@ -6,6 +6,8 @@ import '@fontsource/dm-sans/700.css';
 import '@fontsource/manrope/500.css';
 import '@fontsource/manrope/800.css';
 import './style.css';
+import { createSocial } from './social.js';
+import { blocked, bounds } from '../shared/world.js';
 
 const host = document.querySelector('#world');
 const loading = document.querySelector('#loading');
@@ -189,11 +191,11 @@ box(.32, .08, .13, '#3e342e', 0, 1.96, .17, avatar);
 for (const x of [-.085, .085]) sphere(.017, '#332c27', x, 1.8, .193, avatar);
 const limbs = [];
 for (const side of [-1, 1]) {
-  const leg = new THREE.Group(); leg.position.set(side * .155, .81, 0); avatar.add(leg);
+  const leg = new THREE.Group(); leg.name = `leg-${side}`; leg.position.set(side * .155, .81, 0); avatar.add(leg);
   box(.24, .3, .29, shorts, 0, -.13, 0, leg);
   box(.15, .43, .16, skin, 0, -.47, 0, leg);
   box(.21, .14, .35, '#eee9d8', 0, -.71, .055, leg);
-  const arm = new THREE.Group(); arm.position.set(side * .36, 1.37, 0); avatar.add(arm);
+  const arm = new THREE.Group(); arm.name = `arm-${side}`; arm.position.set(side * .36, 1.37, 0); avatar.add(arm);
   box(.19, .23, .23, shirt, 0, -.08, 0, arm);
   box(.13, .37, .14, skin, 0, -.36, 0, arm);
   sphere(.085, skin, 0, -.57, 0, arm);
@@ -233,13 +235,20 @@ document.querySelector('#help').onclick = () => { keys.clear(); help.showModal()
 document.querySelector('#close-help').onclick = () => help.close();
 document.querySelector('#resume').onclick = () => help.close();
 document.querySelector('#enter').onclick = () => {
+  const name = document.querySelector('#nickname').value.trim().replace(/[^\p{L}\p{N} _-]/gu, '').slice(0, 20);
+  if (name.length < 2) { document.querySelector('#nickname').setCustomValidity('Use pelo menos duas letras ou números.'); document.querySelector('#nickname').reportValidity(); return; }
+  document.querySelector('#nickname').setCustomValidity('');
   playing = true; document.body.classList.add('exploring'); welcome.classList.add('hidden'); session.classList.remove('hidden');
   if (matchMedia('(pointer: coarse)').matches) document.querySelector('#touch-controls').classList.remove('hidden');
+  document.querySelector('#social-panel').classList.remove('hidden');
+  document.querySelector('#gestures').classList.remove('hidden');
+  selfLabel.textContent = name; social.connect(name);
   renderer.domElement.focus();
 };
+document.querySelector('#nickname').addEventListener('input', event => event.target.setCustomValidity(''));
 renderer.domElement.tabIndex = 0;
 const moveCodes = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight']);
-window.addEventListener('keydown', event => { if (playing && !help.open && moveCodes.has(event.code)) { event.preventDefault(); keys.add(event.code); } });
+window.addEventListener('keydown', event => { if (playing && !help.open && !typing() && moveCodes.has(event.code)) { event.preventDefault(); keys.add(event.code); } });
 window.addEventListener('keyup', event => keys.delete(event.code));
 window.addEventListener('blur', () => keys.clear());
 help.addEventListener('close', () => keys.clear());
@@ -254,7 +263,73 @@ for (const button of document.querySelectorAll('[data-move]')) {
   button.addEventListener('pointerdown', event => { event.preventDefault(); keys.add(button.dataset.move); button.setPointerCapture(event.pointerId); });
   for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) button.addEventListener(type, () => keys.delete(button.dataset.move));
 }
-function blocked(x, z) { return obstacles.some(o => Math.abs(x - o.x) < o.w && Math.abs(z - o.z) < o.d); }
+function typing() { return ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName); }
+document.querySelector('#chat-input').addEventListener('focus', () => keys.clear());
+const peers = new Map();
+let localMoving = false, localRunning = false, localGesture = null, gestureUntil = 0;
+function label(name, self = false) {
+  const element = document.createElement('div'); element.className = 'name-label' + (self ? ' self' : ''); element.textContent = name;
+  document.querySelector('#name-labels').append(element); return element;
+}
+const selfLabel = label('Você', true);
+const social = createSocial({
+  onJoined(player) { avatar.position.set(player.x, .08, player.z); keys.clear(); },
+  onPlayers(players, id) {
+    const present = new Set();
+    for (const state of players) {
+      if (state.id === id) { localGesture = state.gesture; gestureUntil = state.gestureUntil; continue; }
+      present.add(state.id);
+      if (!peers.has(state.id)) {
+        const model = avatar.clone(true); model.position.set(state.x, .08, state.z); scene.add(model);
+        const peerLimbs = [-1, 1].map(side => ({ side, leg: model.getObjectByName(`leg-${side}`), arm: model.getObjectByName(`arm-${side}`) }));
+        peers.set(state.id, { model, limbs: peerLimbs, label: label(state.name), state });
+      }
+      peers.get(state.id).state = state;
+    }
+    for (const [id, peer] of peers) if (!present.has(id)) { scene.remove(peer.model); peer.label.remove(); peers.delete(id); }
+  },
+  onDisconnected() { keys.clear(); localGesture = null; for (const peer of peers.values()) { scene.remove(peer.model); peer.label.remove(); } peers.clear(); },
+  onCorrection(position) { avatar.position.x = position.x; avatar.position.z = position.z; },
+});
+for (const button of document.querySelectorAll('[data-gesture]')) button.onclick = () => {
+  keys.clear(); localGesture = button.dataset.gesture; gestureUntil = Date.now() + 3500; social.gesture(localGesture); renderer.domElement.focus();
+};
+setInterval(() => { if (playing) social.move({ x: avatar.position.x, z: avatar.position.z, rotation: avatar.rotation.y, moving: localMoving, running: localRunning }); }, 100);
+function applyGesture(model, joints, gesture, time) {
+  for (const { arm, side } of joints) {
+    arm.rotation.z = 0;
+    if (gesture === 'wave' && side === 1) { arm.rotation.z = -2.4; arm.rotation.x = Math.sin(time * 8) * .35; }
+    if (gesture === 'dance') { arm.rotation.z = side * (-.8 + Math.sin(time * 5) * .3); arm.rotation.x = Math.sin(time * 5 + side) * .7; }
+    if (gesture === 'clap') { arm.rotation.x = -1.2; arm.rotation.z = side * (.35 + Math.sin(time * 12) * .15); }
+  }
+  if (gesture === 'dance') model.position.y += Math.abs(Math.sin(time * 6)) * .12;
+}
+const labelPoint = new THREE.Vector3();
+function placeLabel(element, model) {
+  labelPoint.copy(model.position).add(new THREE.Vector3(0, 2.35, 0)).project(camera);
+  const visible = playing && labelPoint.z > -1 && labelPoint.z < 1 && Math.abs(labelPoint.x) < 1.05 && Math.abs(labelPoint.y) < 1.05;
+  element.style.display = visible ? 'block' : 'none';
+  if (visible) element.style.transform = `translate(${(labelPoint.x * .5 + .5) * innerWidth}px, ${(-labelPoint.y * .5 + .5) * innerHeight}px) translate(-50%, -100%)`;
+}
+function updatePeers(dt) {
+  if (Date.now() > gestureUntil) localGesture = null;
+  for (const button of document.querySelectorAll('[data-gesture]')) button.classList.toggle('active', button.dataset.gesture === localGesture);
+  for (const peer of peers.values()) {
+    const { model, state, limbs } = peer;
+    model.position.x = THREE.MathUtils.lerp(model.position.x, state.x, 1 - Math.exp(-dt * 12));
+    model.position.z = THREE.MathUtils.lerp(model.position.z, state.z, 1 - Math.exp(-dt * 12));
+    model.rotation.y += Math.atan2(Math.sin(state.rotation - model.rotation.y), Math.cos(state.rotation - model.rotation.y)) * Math.min(dt * 12, 1);
+    model.position.y = .08;
+    for (const { leg, arm, side } of limbs) {
+      const swing = state.moving ? Math.sin(elapsed * (state.running ? 13 : 9)) * .45 * side : 0;
+      leg.rotation.x = swing; arm.rotation.x = -swing;
+    }
+    applyGesture(model, limbs, state.gestureUntil > Date.now() ? state.gesture : null, elapsed);
+    placeLabel(peer.label, model);
+  }
+  placeLabel(selfLabel, avatar);
+}
+
 const timer = new THREE.Timer(), target = new THREE.Vector3(), desired = new THREE.Vector3();
 let elapsed = 0, frames = 0;
 camera.position.set(20, 10, 25); camera.lookAt(-6, 2, -17);
@@ -264,13 +339,14 @@ function animate() {
     const inputX = Number(keys.has('KeyD') || keys.has('ArrowRight')) - Number(keys.has('KeyA') || keys.has('ArrowLeft'));
     const inputZ = Number(keys.has('KeyW') || keys.has('ArrowUp')) - Number(keys.has('KeyS') || keys.has('ArrowDown'));
     const running = keys.has('ShiftLeft') || keys.has('ShiftRight');
-    const moving = !help.open && (inputX || inputZ);
+    const moving = !help.open && !typing() && Boolean(inputX || inputZ);
+    localMoving = moving; localRunning = running;
     if (moving) {
       const norm = Math.hypot(inputX, inputZ), speed = running ? 5.8 : 3;
       const dx = (inputX * Math.cos(yaw) - inputZ * Math.sin(yaw)) / norm * speed * dt;
       const dz = (-inputX * Math.sin(yaw) - inputZ * Math.cos(yaw)) / norm * speed * dt;
-      const nx = THREE.MathUtils.clamp(avatar.position.x + dx, -7.3, 15);
-      const nz = THREE.MathUtils.clamp(avatar.position.z + dz, -105, 65);
+      const nx = THREE.MathUtils.clamp(avatar.position.x + dx, bounds.minX, bounds.maxX);
+      const nz = THREE.MathUtils.clamp(avatar.position.z + dz, bounds.minZ, bounds.maxZ);
       if (!blocked(nx, avatar.position.z)) avatar.position.x = nx;
       if (!blocked(avatar.position.x, nz)) avatar.position.z = nz;
       const angle = Math.atan2(dx, dz);
@@ -282,6 +358,7 @@ function animate() {
       arm.rotation.x = THREE.MathUtils.lerp(arm.rotation.x, -swing, .3);
     }
     avatar.position.y = .08 + (moving ? Math.abs(Math.sin(elapsed * 9)) * .035 : Math.sin(elapsed * 2) * .008);
+    applyGesture(avatar, limbs, localGesture, elapsed);
     target.copy(avatar.position).add(new THREE.Vector3(0, 1.2, 0));
     desired.set(target.x + Math.sin(yaw) * distance * Math.cos(pitch), target.y + Math.sin(pitch) * distance, target.z + Math.cos(yaw) * distance * Math.cos(pitch));
     camera.position.lerp(desired, 1 - Math.exp(-dt * 6)); camera.lookAt(target);
@@ -289,10 +366,11 @@ function animate() {
     document.querySelector('#map-dot').setAttribute('cy', String(THREE.MathUtils.clamp(65 + avatar.position.z * .32, 8, 111)));
   }
   foam.forEach((strip, i) => { strip.position.x = 18 + i * 2.4 + Math.sin(elapsed * .5 + i) * .5; strip.material.opacity = .22 + Math.sin(elapsed * .65 + i) * .1; });
+  updatePeers(dt);
   renderer.render(scene, camera); frames++;
   if (frames === 2) { loading.classList.add('hidden'); host.dataset.ready = 'true'; }
 }
 renderer.setAnimationLoop(animate);
 window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 // Read-only state for a browser smoke test; no credentials or gameplay commands.
-window.orlaState = () => ({ playing, position: avatar.position.toArray(), camera: camera.position.toArray(), frames });
+window.orlaState = () => ({ playing, position: avatar.position.toArray(), camera: camera.position.toArray(), frames, connected: social.connected(), peers: [...peers.values()].map(p => ({ id: p.state.id, name: p.state.name, x: p.model.position.x, z: p.model.position.z, gesture: p.state.gesture })) });
